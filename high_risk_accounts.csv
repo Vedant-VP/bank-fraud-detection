@@ -1,7 +1,7 @@
-SQL> SELECT 'ACCOUNT_ID,FULL_NAME,CITY,ALERT_COUNT,MAX_SCORE,AVG_SCORE' FROM dual;
+
 ACCOUNT_ID,FULL_NAME,CITY,ALERT_COUNT,MAX_SCORE,AVG_SCORE
-Elapsed: 00:00:00.00
-SQL> SELECT account_id||','||full_name||','||city||','||alert_count||','||max_score||','||avg_score FROM v_high_risk_accounts;
+
+
 5,Customer 5,Mumbai,3,60,46.7
 19,Customer 19,Bengaluru,3,60,46.7
 44,Customer 44,Delhi,3,60,46.7
@@ -70,5 +70,4 @@ SQL> SELECT account_id||','||full_name||','||city||','||alert_count||','||max_sc
 13,Customer 13,Delhi,2,40,40
 9,Customer 9,Chennai,2,40,40
 3856,Customer 3431,Bengaluru,2,60,60
-Elapsed: 00:00:00.36
-SQL> SPOOL OFF
+
