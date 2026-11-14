@@ -1,0 +1,397 @@
+-- ============================================================
+-- BANK FRAUD DETECTION PROJECT - ALL QUERIES IN RUN ORDER
+-- Oracle 10g | SQL*Plus ("Run SQL Command Line")
+-- ============================================================
+
+-- ------------------------------------------------------------
+-- STEP 1: LOGIN AS ADMIN AND CREATE PROJECT USER
+-- ------------------------------------------------------------
+connect / as sysdba
+
+CREATE USER bankdb IDENTIFIED BY bank123;
+
+GRANT CONNECT, RESOURCE, CREATE VIEW, CREATE PROCEDURE, CREATE TRIGGER TO bankdb;
+
+connect bankdb/bank123
+
+SHOW USER
+
+
+-- ------------------------------------------------------------
+-- STEP 2: TABLES (run as BANKDB)
+-- ------------------------------------------------------------
+CREATE TABLE branches (
+  branch_id   NUMBER PRIMARY KEY,
+  branch_name VARCHAR2(80) NOT NULL,
+  city        VARCHAR2(50) NOT NULL
+);
+
+CREATE TABLE customers (
+  customer_id NUMBER PRIMARY KEY,
+  full_name   VARCHAR2(100) NOT NULL,
+  email       VARCHAR2(100) UNIQUE,
+  phone       VARCHAR2(15),
+  city        VARCHAR2(50),
+  join_date   DATE DEFAULT SYSDATE
+);
+
+CREATE TABLE accounts (
+  account_id   NUMBER PRIMARY KEY,
+  customer_id  NUMBER NOT NULL REFERENCES customers(customer_id),
+  branch_id    NUMBER NOT NULL REFERENCES branches(branch_id),
+  account_type VARCHAR2(15) CHECK (account_type IN ('SAVINGS','CURRENT','SALARY')),
+  balance      NUMBER(14,2) DEFAULT 0,
+  status       VARCHAR2(10) DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','FROZEN','CLOSED')),
+  open_date    DATE DEFAULT SYSDATE
+);
+
+CREATE TABLE transactions (
+  txn_id     NUMBER PRIMARY KEY,
+  account_id NUMBER NOT NULL REFERENCES accounts(account_id),
+  txn_type   VARCHAR2(12) CHECK (txn_type IN ('DEPOSIT','WITHDRAWAL','TRANSFER','PAYMENT')),
+  amount     NUMBER(14,2) NOT NULL CHECK (amount > 0),
+  txn_time   DATE NOT NULL,
+  city       VARCHAR2(50),
+  channel    VARCHAR2(10) CHECK (channel IN ('ATM','UPI','ONLINE','BRANCH','POS'))
+);
+
+CREATE INDEX idx_txn_acc_time ON transactions(account_id, txn_time);
+CREATE INDEX idx_txn_time     ON transactions(txn_time);
+
+CREATE TABLE fraud_rules (
+  rule_code   VARCHAR2(30) PRIMARY KEY,
+  description VARCHAR2(200),
+  weight      NUMBER(3) NOT NULL,
+  is_active   CHAR(1) DEFAULT 'Y'
+);
+
+CREATE TABLE fraud_alerts (
+  alert_id   NUMBER PRIMARY KEY,
+  txn_id     NUMBER NOT NULL REFERENCES transactions(txn_id),
+  account_id NUMBER NOT NULL,
+  risk_score NUMBER(3) NOT NULL,
+  rules_hit  VARCHAR2(200),
+  status     VARCHAR2(15) DEFAULT 'OPEN' CHECK (status IN ('OPEN','REVIEW','CONFIRMED','CLEARED')),
+  created_at DATE DEFAULT SYSDATE
+);
+
+
+-- ------------------------------------------------------------
+-- STEP 3: SEQUENCES
+-- ------------------------------------------------------------
+CREATE SEQUENCE seq_branches;
+CREATE SEQUENCE seq_customers;
+CREATE SEQUENCE seq_accounts;
+CREATE SEQUENCE seq_transactions CACHE 1000;
+CREATE SEQUENCE seq_alerts;
+
+
+-- ------------------------------------------------------------
+-- STEP 4: AUTO-ID TRIGGERS (multi-line version, the one that worked)
+-- ------------------------------------------------------------
+CREATE OR REPLACE TRIGGER trg_branches_bi
+BEFORE INSERT ON branches
+FOR EACH ROW
+BEGIN
+  SELECT seq_branches.NEXTVAL INTO :NEW.branch_id FROM dual;
+END;
+/
+CREATE OR REPLACE TRIGGER trg_customers_bi
+BEFORE INSERT ON customers
+FOR EACH ROW
+BEGIN
+  SELECT seq_customers.NEXTVAL INTO :NEW.customer_id FROM dual;
+END;
+/
+CREATE OR REPLACE TRIGGER trg_accounts_bi
+BEFORE INSERT ON accounts
+FOR EACH ROW
+BEGIN
+  SELECT seq_accounts.NEXTVAL INTO :NEW.account_id FROM dual;
+END;
+/
+CREATE OR REPLACE TRIGGER trg_transactions_bi
+BEFORE INSERT ON transactions
+FOR EACH ROW
+BEGIN
+  SELECT seq_transactions.NEXTVAL INTO :NEW.txn_id FROM dual;
+END;
+/
+CREATE OR REPLACE TRIGGER trg_alerts_bi
+BEFORE INSERT ON fraud_alerts
+FOR EACH ROW
+BEGIN
+  SELECT seq_alerts.NEXTVAL INTO :NEW.alert_id FROM dual;
+END;
+/
+
+SELECT object_name, status FROM user_objects WHERE object_type = 'TRIGGER';
+
+
+-- ------------------------------------------------------------
+-- STEP 5: FRAUD RULES DATA
+-- ------------------------------------------------------------
+INSERT INTO fraud_rules VALUES ('HIGH_AMOUNT','Amount > 5x account average',40,'Y');
+INSERT INTO fraud_rules VALUES ('VELOCITY','5+ txns within 10 minutes',40,'Y');
+INSERT INTO fraud_rules VALUES ('ODD_HOUR','Txn above 50k between 1 AM and 4 AM',20,'Y');
+INSERT INTO fraud_rules VALUES ('LOCATION_JUMP','Different city within 1 hour',35,'Y');
+INSERT INTO fraud_rules VALUES ('STRUCTURING','5+ small deposits in a day then big withdrawal',40,'Y');
+COMMIT;
+
+
+-- ------------------------------------------------------------
+-- STEP 6: LOAD DATA
+-- ------------------------------------------------------------
+INSERT INTO branches(branch_name, city) VALUES ('Main Branch','Mumbai');
+INSERT INTO branches(branch_name, city) VALUES ('Central Branch','Delhi');
+INSERT INTO branches(branch_name, city) VALUES ('Tech Park Branch','Bengaluru');
+INSERT INTO branches(branch_name, city) VALUES ('Marina Branch','Chennai');
+INSERT INTO branches(branch_name, city) VALUES ('Lake Branch','Kolkata');
+
+INSERT INTO customers(full_name, email, phone, city) SELECT 'Customer ' || LEVEL, 'cust' || LEVEL || '@mail.com', '9' || TRUNC(DBMS_RANDOM.VALUE(100000000, 999999999)), DECODE(TRUNC(DBMS_RANDOM.VALUE(1,6)),1,'Mumbai',2,'Delhi',3,'Bengaluru',4,'Chennai','Kolkata') FROM dual CONNECT BY LEVEL <= 5000;
+
+INSERT INTO accounts(customer_id, branch_id, account_type, balance, open_date) SELECT customer_id, TRUNC(DBMS_RANDOM.VALUE(1,6)), DECODE(TRUNC(DBMS_RANDOM.VALUE(1,4)),1,'SAVINGS',2,'CURRENT','SALARY'), ROUND(DBMS_RANDOM.VALUE(5000, 500000), 2), SYSDATE - TRUNC(DBMS_RANDOM.VALUE(30, 2000)) FROM customers;
+
+COMMIT;
+
+BEGIN
+  FOR i IN 1..5 LOOP
+    INSERT INTO transactions(account_id, txn_type, amount, txn_time, city, channel)
+    SELECT TRUNC(DBMS_RANDOM.VALUE(1,5001)),
+           DECODE(TRUNC(DBMS_RANDOM.VALUE(1,5)),1,'DEPOSIT',2,'WITHDRAWAL',3,'TRANSFER','PAYMENT'),
+           ROUND(DBMS_RANDOM.VALUE(100, 20000), 2),
+           SYSDATE - DBMS_RANDOM.VALUE(0, 365),
+           DECODE(TRUNC(DBMS_RANDOM.VALUE(1,6)),1,'Mumbai',2,'Delhi',3,'Bengaluru',4,'Chennai','Kolkata'),
+           DECODE(TRUNC(DBMS_RANDOM.VALUE(1,6)),1,'ATM',2,'UPI',3,'ONLINE',4,'BRANCH','POS')
+    FROM dual CONNECT BY LEVEL <= 100000;
+    COMMIT;
+  END LOOP;
+END;
+/
+
+INSERT INTO transactions(account_id, txn_type, amount, txn_time, city, channel)
+SELECT TRUNC(DBMS_RANDOM.VALUE(1,5001)), 'TRANSFER', ROUND(DBMS_RANDOM.VALUE(150000, 400000), 2), TRUNC(SYSDATE) - TRUNC(DBMS_RANDOM.VALUE(1,300)) + 2/24, 'Mumbai', 'ONLINE' FROM dual CONNECT BY LEVEL <= 400;
+
+INSERT INTO transactions(account_id, txn_type, amount, txn_time, city, channel)
+SELECT a.account_id, 'WITHDRAWAL', 9000 + n.lvl * 100, TRUNC(SYSDATE) - 10 + 14/24 + n.lvl/1440, 'Delhi', 'ATM' FROM (SELECT account_id FROM accounts WHERE account_id <= 50) a, (SELECT LEVEL lvl FROM dual CONNECT BY LEVEL <= 6) n;
+
+COMMIT;
+
+SELECT COUNT(*) FROM customers;
+SELECT COUNT(*) FROM accounts;
+SELECT COUNT(*) FROM transactions;
+SELECT rule_code, weight FROM fraud_rules;
+
+
+-- ------------------------------------------------------------
+-- STEP 7: FRAUD RULE VIEWS
+-- ------------------------------------------------------------
+CREATE OR REPLACE VIEW v_rule_high_amount AS
+SELECT t.txn_id, t.account_id, 'HIGH_AMOUNT' AS rule_code
+FROM transactions t
+JOIN (SELECT account_id, AVG(amount) avg_amt FROM transactions GROUP BY account_id) a
+  ON a.account_id = t.account_id
+WHERE t.amount > 5 * a.avg_amt;
+
+CREATE OR REPLACE VIEW v_rule_velocity AS
+SELECT txn_id, account_id, 'VELOCITY' AS rule_code
+FROM (
+  SELECT txn_id, account_id,
+         COUNT(*) OVER (PARTITION BY account_id ORDER BY txn_time
+                        RANGE BETWEEN 10/1440 PRECEDING AND CURRENT ROW) AS cnt
+  FROM transactions
+)
+WHERE cnt >= 5;
+
+CREATE OR REPLACE VIEW v_rule_odd_hour AS
+SELECT txn_id, account_id, 'ODD_HOUR' AS rule_code
+FROM transactions
+WHERE TO_NUMBER(TO_CHAR(txn_time,'HH24')) BETWEEN 1 AND 4
+  AND amount > 50000;
+
+CREATE OR REPLACE VIEW v_rule_location_jump AS
+SELECT txn_id, account_id, 'LOCATION_JUMP' AS rule_code
+FROM (
+  SELECT txn_id, account_id, city, txn_time,
+         LAG(city)     OVER (PARTITION BY account_id ORDER BY txn_time) AS prev_city,
+         LAG(txn_time) OVER (PARTITION BY account_id ORDER BY txn_time) AS prev_time
+  FROM transactions
+)
+WHERE prev_city IS NOT NULL
+  AND city <> prev_city
+  AND txn_time - prev_time < 1/24;
+
+CREATE OR REPLACE VIEW v_rule_structuring AS
+SELECT w.txn_id, w.account_id, 'STRUCTURING' AS rule_code
+FROM transactions w
+WHERE w.txn_type = 'WITHDRAWAL' AND w.amount > 50000
+  AND (SELECT COUNT(*) FROM transactions d
+       WHERE d.account_id = w.account_id
+         AND d.txn_type = 'DEPOSIT' AND d.amount < 50000
+         AND d.txn_time BETWEEN w.txn_time - 1 AND w.txn_time) >= 5;
+
+CREATE OR REPLACE VIEW v_all_rule_hits AS
+SELECT * FROM v_rule_high_amount
+UNION ALL SELECT * FROM v_rule_velocity
+UNION ALL SELECT * FROM v_rule_odd_hour
+UNION ALL SELECT * FROM v_rule_location_jump
+UNION ALL SELECT * FROM v_rule_structuring;
+
+SELECT rule_code, COUNT(*) FROM v_all_rule_hits GROUP BY rule_code;
+
+
+-- ------------------------------------------------------------
+-- STEP 8: FRAUD ENGINE (procedures + trigger)
+-- ------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE sp_run_fraud_scan IS
+BEGIN
+  INSERT INTO fraud_alerts(txn_id, account_id, risk_score, rules_hit)
+  SELECT h.txn_id, h.account_id,
+         LEAST(100, SUM(r.weight)),
+         MAX(h.rule_code)
+  FROM v_all_rule_hits h
+  JOIN fraud_rules r ON r.rule_code = h.rule_code AND r.is_active = 'Y'
+  GROUP BY h.txn_id, h.account_id
+  HAVING SUM(r.weight) >= 40;
+  COMMIT;
+END;
+/
+
+CREATE OR REPLACE PROCEDURE sp_freeze_account(p_account_id IN NUMBER) IS
+BEGIN
+  UPDATE accounts SET status = 'FROZEN' WHERE account_id = p_account_id;
+  UPDATE fraud_alerts SET status = 'REVIEW'
+  WHERE account_id = p_account_id AND status = 'OPEN';
+  COMMIT;
+END;
+/
+
+CREATE OR REPLACE TRIGGER trg_big_txn_alert
+AFTER INSERT ON transactions
+FOR EACH ROW
+WHEN (NEW.amount >= 200000)
+BEGIN
+  INSERT INTO fraud_alerts(txn_id, account_id, risk_score, rules_hit)
+  VALUES (:NEW.txn_id, :NEW.account_id, 60, 'BIG_TXN_TRIGGER');
+END;
+/
+
+EXEC sp_run_fraud_scan;
+
+SELECT COUNT(*) FROM fraud_alerts;
+SELECT rules_hit, COUNT(*), ROUND(AVG(risk_score),1) FROM fraud_alerts GROUP BY rules_hit;
+
+
+-- ------------------------------------------------------------
+-- STEP 9: TEST TRIGGER AND FREEZE PROCEDURE
+-- ------------------------------------------------------------
+INSERT INTO transactions(account_id, txn_type, amount, txn_time, city, channel)
+VALUES (10, 'TRANSFER', 250000, SYSDATE, 'Mumbai', 'ONLINE');
+
+COMMIT;
+
+SELECT alert_id, account_id, risk_score, rules_hit FROM fraud_alerts WHERE rules_hit = 'BIG_TXN_TRIGGER';
+
+EXEC sp_freeze_account(10);
+
+SELECT account_id, status FROM accounts WHERE account_id = 10;
+
+
+-- ------------------------------------------------------------
+-- STEP 10: REPORT VIEWS FOR POWER BI
+-- ------------------------------------------------------------
+CREATE OR REPLACE VIEW v_alert_details AS
+SELECT f.alert_id, f.risk_score, f.rules_hit, f.status,
+       t.txn_id, t.txn_type, t.amount, t.txn_time, t.city AS txn_city, t.channel,
+       a.account_id, c.full_name, c.city AS home_city
+FROM fraud_alerts f
+JOIN transactions t ON t.txn_id = f.txn_id
+JOIN accounts a ON a.account_id = f.account_id
+JOIN customers c ON c.customer_id = a.customer_id;
+
+CREATE OR REPLACE VIEW v_high_risk_accounts AS
+SELECT * FROM (
+  SELECT a.account_id, c.full_name, c.city,
+         COUNT(*) AS alert_count,
+         MAX(f.risk_score) AS max_score,
+         ROUND(AVG(f.risk_score),1) AS avg_score,
+         RANK() OVER (ORDER BY COUNT(*) DESC) AS risk_rank
+  FROM fraud_alerts f
+  JOIN accounts a ON a.account_id = f.account_id
+  JOIN customers c ON c.customer_id = a.customer_id
+  GROUP BY a.account_id, c.full_name, c.city
+) WHERE risk_rank <= 10;
+
+CREATE OR REPLACE VIEW v_alerts_by_rule AS
+SELECT rules_hit, COUNT(*) AS alerts, ROUND(AVG(risk_score),1) AS avg_score
+FROM fraud_alerts GROUP BY rules_hit;
+
+CREATE OR REPLACE VIEW v_monthly_fraud AS
+SELECT TRUNC(t.txn_time,'MM') AS month,
+       COUNT(*) AS total_txns,
+       COUNT(f.alert_id) AS flagged_txns,
+       ROUND(100 * COUNT(f.alert_id) / COUNT(*), 3) AS fraud_pct,
+       SUM(CASE WHEN f.alert_id IS NOT NULL THEN t.amount END) AS amount_at_risk
+FROM transactions t
+LEFT JOIN fraud_alerts f ON f.txn_id = t.txn_id
+GROUP BY TRUNC(t.txn_time,'MM');
+
+CREATE OR REPLACE VIEW v_hourly_alerts AS
+SELECT TO_NUMBER(TO_CHAR(t.txn_time,'HH24')) AS hr, COUNT(*) AS alerts
+FROM fraud_alerts f JOIN transactions t ON t.txn_id = f.txn_id
+GROUP BY TO_NUMBER(TO_CHAR(t.txn_time,'HH24'));
+
+SELECT * FROM v_alerts_by_rule;
+SELECT * FROM v_high_risk_accounts;
+SELECT * FROM v_monthly_fraud ORDER BY month;
+SELECT * FROM v_hourly_alerts ORDER BY hr;
+
+
+-- ------------------------------------------------------------
+-- STEP 11: EXPORT VIEWS TO CSV (for Power BI)
+-- ------------------------------------------------------------
+HOST mkdir C:\blank_project\powerbi
+
+SET PAGESIZE 0
+SET LINESIZE 1000
+SET FEEDBACK OFF
+SET HEADING OFF
+SET TRIMSPOOL ON
+
+SPOOL C:\blank_project\powerbi\monthly_fraud.csv
+SELECT 'MONTH,TOTAL_TXNS,FLAGGED_TXNS,FRAUD_PCT,AMOUNT_AT_RISK' FROM dual;
+SELECT TO_CHAR(month,'YYYY-MM-DD')||','||total_txns||','||flagged_txns||','||fraud_pct||','||NVL(amount_at_risk,0) FROM v_monthly_fraud ORDER BY month;
+SPOOL OFF
+
+SPOOL C:\blank_project\powerbi\hourly_alerts.csv
+SELECT 'HR,ALERTS' FROM dual;
+SELECT hr||','||alerts FROM v_hourly_alerts ORDER BY hr;
+SPOOL OFF
+
+SPOOL C:\blank_project\powerbi\alerts_by_rule.csv
+SELECT 'RULES_HIT,ALERTS,AVG_SCORE' FROM dual;
+SELECT rules_hit||','||alerts||','||avg_score FROM v_alerts_by_rule;
+SPOOL OFF
+
+SPOOL C:\blank_project\powerbi\high_risk_accounts.csv
+SELECT 'ACCOUNT_ID,FULL_NAME,CITY,ALERT_COUNT,MAX_SCORE,AVG_SCORE' FROM dual;
+SELECT account_id||','||full_name||','||city||','||alert_count||','||max_score||','||avg_score FROM v_high_risk_accounts;
+SPOOL OFF
+
+SPOOL C:\blank_project\powerbi\alert_details.csv
+SELECT 'ALERT_ID,RISK_SCORE,RULES_HIT,STATUS,TXN_ID,TXN_TYPE,AMOUNT,TXN_TIME,TXN_CITY,CHANNEL,ACCOUNT_ID,FULL_NAME,HOME_CITY' FROM dual;
+SELECT alert_id||','||risk_score||','||rules_hit||','||status||','||txn_id||','||txn_type||','||amount||','||TO_CHAR(txn_time,'YYYY-MM-DD HH24:MI:SS')||','||txn_city||','||channel||','||account_id||','||full_name||','||home_city FROM v_alert_details;
+SPOOL OFF
+
+SET HEADING ON
+SET FEEDBACK ON
+SET PAGESIZE 50
+
+
+-- ------------------------------------------------------------
+-- STEP 12: POWER BI MEASURES (DAX, not SQL)
+-- ------------------------------------------------------------
+-- Total Txns = SUM(monthly_fraud[TOTAL_TXNS])
+-- Flagged Txns = SUM(monthly_fraud[FLAGGED_TXNS])
+-- Fraud % = DIVIDE([Flagged Txns], [Total Txns])
+-- Amount at Risk = SUM(monthly_fraud[AMOUNT_AT_RISK])

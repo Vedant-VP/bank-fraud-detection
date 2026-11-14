@@ -1,0 +1,8 @@
+SQL> SELECT 'HR,ALERTS' FROM dual;
+HR,ALERTS
+Elapsed: 00:00:00.00
+SQL> SELECT hr||','||alerts FROM v_hourly_alerts ORDER BY hr;
+2,400
+14,101
+Elapsed: 00:00:00.02
+SQL> SPOOL OFF
