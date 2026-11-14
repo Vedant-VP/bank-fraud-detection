@@ -1,9 +1,6 @@
-SQL> SELECT 'RULES_HIT,ALERTS,AVG_SCORE' FROM dual;
+
 RULES_HIT,ALERTS,AVG_SCORE
-Elapsed: 00:00:00.01
-SQL> SELECT rules_hit||','||alerts||','||avg_score FROM v_alerts_by_rule;
+
 BIG_TXN_TRIGGER,1,60
 ODD_HOUR,400,60.2
 VELOCITY,100,40
-Elapsed: 00:00:00.02
-SQL> SPOOL OFF
